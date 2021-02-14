@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
+from pdb import set_trace as st
 
 class CNN_OriginalFedAvg(torch.nn.Module):
     """The CNN model used in the original FedAvg paper:
@@ -112,21 +114,27 @@ class CNN_DropOut(torch.nn.Module):
       A `torch.nn.Module`.
     """
 
-    def __init__(self, only_digits=True):
+    def __init__(self, only_digits=True, input_dim=1):
         super(CNN_DropOut, self).__init__()
-        self.conv2d_1 = torch.nn.Conv2d(1, 32, kernel_size=3)
+        self.conv2d_1 = torch.nn.Conv2d(input_dim, 32, kernel_size=3)
         self.max_pooling = nn.MaxPool2d(2, stride=2)
         self.conv2d_2 = torch.nn.Conv2d(32, 64, kernel_size=3)
         self.dropout_1 = nn.Dropout(0.25)
         self.flatten = nn.Flatten()
         self.linear_1 = nn.Linear(9216, 128)
         self.dropout_2 = nn.Dropout(0.5)
-        self.linear_2 = nn.Linear(128, 10 if only_digits else 62)
+        if isinstance(only_digits, bool):
+          self.linear_2 = nn.Linear(128, 10 if only_digits else 62)
+        elif isinstance(only_digits, int):
+
+          # For EMNIST dataset, have 47 classes
+          self.linear_2 = nn.Linear(128, only_digits)
         self.relu = nn.ReLU()
         #self.softmax = nn.Softmax(dim=1)
 
     def forward(self, x):
-        x = torch.unsqueeze(x, 1)
+        if x.dim() == 3:
+          x = torch.unsqueeze(x, 1)
         x = self.conv2d_1(x)
         x = self.relu(x)
         x = self.conv2d_2(x)
@@ -140,3 +148,26 @@ class CNN_DropOut(torch.nn.Module):
         x = self.linear_2(x)
         #x = self.softmax(self.linear_2(x))
         return x
+
+class CNNCifar(nn.Module):
+    def __init__(self, num_classes=10):
+        super(CNNCifar, self).__init__()
+        self.conv1 = nn.Conv2d(3, 6, 5)
+        self.pool = nn.MaxPool2d(2, 2)
+        self.conv2 = nn.Conv2d(6, 16, 5)
+        self.fc1 = nn.Linear(16 * 5 * 5, 120)
+        self.dropout_1 = nn.Dropout(0.25)
+        self.fc2 = nn.Linear(120, 84)
+        self.dropout_2 = nn.Dropout(0.5)
+        self.fc3 = nn.Linear(84, num_classes)
+
+    def forward(self, x):
+        x = self.pool(F.relu(self.conv1(x)))
+        x = self.pool(F.relu(self.conv2(x)))
+        x = x.view(-1, 16 * 5 * 5)
+        x = F.relu(self.fc1(x))
+        x = self.dropout_1(x)
+        x = F.relu(self.fc2(x))
+        x = self.dropout_2(x)
+        x = self.fc3(x)
+        return F.log_softmax(x, dim=1)

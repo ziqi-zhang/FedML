@@ -141,3 +141,9 @@ The corresponding author is:
 Chaoyang He\
 chaoyang.he@usc.edu\
 http://chaoyanghe.com
+
+# Ziqi's log
+- wandb should version 0.9.7, otherwise pdb can not be used in the interactive mode
+```
+pip install wandb==0.9.7
+```

@@ -4,6 +4,7 @@ import os
 import random
 import socket
 import sys
+from pdb import set_trace as st
 
 import numpy as np
 import psutil
@@ -25,12 +26,21 @@ from fedml_api.data_preprocessing.ImageNet.data_loader import load_partition_dat
 from fedml_api.data_preprocessing.ImageNet.data_loader import distributed_centralized_ImageNet_loader
 from fedml_api.data_preprocessing.Landmarks.data_loader import load_partition_data_landmarks
 
+from fedml_api.data_preprocessing.UCIAdult.dataloader import load_partition_data_uciadult
+from fedml_api.data_preprocessing.purchase.dataloader import load_partition_data_purchase
 from fedml_api.data_preprocessing.cifar10.data_loader import load_partition_data_cifar10
 from fedml_api.data_preprocessing.cifar100.data_loader import load_partition_data_cifar100
 from fedml_api.data_preprocessing.cinic10.data_loader import load_partition_data_cinic10
+from fedml_api.data_preprocessing.HAR.data_loader import load_partition_data_ucihar
+from fedml_api.data_preprocessing.chmnist.data_loader import load_partition_data_chmnist
 
+from fedml_api.model.linear.har_cnn import HAR_CNN
+from fedml_api.model.linear.dense_mlp import *
+# from fedml_api.model.linear.har.cnn import init_specific_model
 from fedml_api.model.cv.cnn import CNN_DropOut
 from fedml_api.model.cv.resnet_gn import resnet18
+from fedml_api.model.cv.vgg import VGG
+from fedml_api.model.cv.resnet_cifar import *
 from fedml_api.model.cv.mobilenet import mobilenet
 from fedml_api.model.cv.resnet import resnet56
 from fedml_api.model.nlp.rnn import RNN_OriginalFedAvg, RNN_StackOverFlow
@@ -112,6 +122,7 @@ def add_args(parser):
 
     parser.add_argument('--local_rank', type=int, default=0,
                         help='given by torch.distributed.launch')
+    parser.add_argument('--run_tag', type=str, default=None)
 
 
     args = parser.parse_args()
@@ -119,17 +130,64 @@ def add_args(parser):
 
 
 def load_data(args, dataset_name):
-    if dataset_name == "mnist":
+    if dataset_name in ["mnist", "fmnist", "emnist"]:
         logging.info("load_data. dataset_name = %s" % dataset_name)
         client_num, train_data_num, test_data_num, train_data_global, test_data_global, \
         train_data_local_num_dict, train_data_local_dict, test_data_local_dict, \
-        class_num = load_partition_data_mnist(args.batch_size)
+        class_num = load_partition_data_mnist(
+            args.dataset, args.data_dir, args.partition_method,
+            args.partition_alpha, args.client_num_in_total, args.batch_size
+        )
+        
         """
         For shallow NN or linear models, 
         we uniformly sample a fraction of clients each round (as the original FedAvg paper)
         """
         args.client_num_in_total = client_num
-
+    elif dataset_name == "har":
+        logging.info("load_data. dataset_name = %s" % dataset_name)
+        client_num, train_data_num, test_data_num, train_data_global, test_data_global, \
+        train_data_local_num_dict, train_data_local_dict, test_data_local_dict, \
+        class_num = load_partition_data_ucihar(
+            args.dataset, args.data_dir, args.partition_method,
+            args.partition_alpha, args.client_num_in_total, args.batch_size
+        )
+        
+        """
+        For shallow NN or linear models, 
+        we uniformly sample a fraction of clients each round (as the original FedAvg paper)
+        """
+        args.client_num_in_total = client_num
+    elif dataset_name == "chmnist":
+        logging.info("load_data. dataset_name = %s" % dataset_name)
+        client_num, train_data_num, test_data_num, train_data_global, test_data_global, \
+        train_data_local_num_dict, train_data_local_dict, test_data_local_dict, \
+        class_num = load_partition_data_chmnist(
+            args.dataset, args.data_dir, args.partition_method,
+            args.partition_alpha, args.client_num_in_total, args.batch_size
+        )
+        
+        args.client_num_in_total = client_num
+    elif dataset_name == "adult":
+        logging.info("load_data. dataset_name = %s" % dataset_name)
+        client_num, train_data_num, test_data_num, train_data_global, test_data_global, \
+        train_data_local_num_dict, train_data_local_dict, test_data_local_dict, \
+        class_num = load_partition_data_uciadult(
+            args.dataset, args.data_dir, args.partition_method,
+            args.partition_alpha, args.client_num_in_total, args.batch_size
+        )
+        
+        args.client_num_in_total = client_num
+    elif dataset_name in ["purchase100", "texas100"]:
+        logging.info("load_data. dataset_name = %s" % dataset_name)
+        client_num, train_data_num, test_data_num, train_data_global, test_data_global, \
+        train_data_local_num_dict, train_data_local_dict, test_data_local_dict, \
+        class_num = load_partition_data_purchase(
+            args.dataset, args.data_dir, args.partition_method,
+            args.partition_alpha, args.client_num_in_total, args.batch_size
+        )
+        
+        args.client_num_in_total = client_num
     elif dataset_name == "femnist":
         logging.info("load_data. dataset_name = %s" % dataset_name)
         client_num, train_data_num, test_data_num, train_data_global, test_data_global, \
@@ -239,12 +297,31 @@ def load_data(args, dataset_name):
 def create_model(args, model_name, output_dim):
     logging.info("create_model. model_name = %s, output_dim = %s" % (model_name, output_dim))
     model = None
-    if model_name == "lr" and args.dataset == "mnist":
+    if model_name == "lr" and args.dataset in ["mnist", "fmnist", "emnist"]:
         logging.info("LogisticRegression + MNIST")
-        model = LogisticRegression(28 * 28, output_dim)
+        model = LogisticRegression(28 * 28, output_dim, flatten=True)
+    elif model_name == "cnn" and args.dataset in ["mnist", "fmnist", "emnist"]:
+        if args.dataset in ["mnist", "fmnist"]:
+            logging.info("CNN + MNIST")
+            model = CNN_DropOut(True)
+        elif args.dataset == "emnist":
+            logging.info("CNN + MNIST")
+            model = CNN_DropOut(only_digits=47)
+    elif model_name == "cnn" and args.dataset == "har":
+        logging.info("CNN + HAR")
+        # model = init_specific_model("Cnn1", data_size=(9, 128), num_classes=6)
+        model = HAR_CNN(data_size=(9, 128), n_classes=6)
     elif model_name == "cnn" and args.dataset == "femnist":
         logging.info("CNN + FederatedEMNIST")
         model = CNN_DropOut(False)
+    elif model_name == "purchasemlp":
+        if args.dataset == "purchase100":
+            model = PurchaseMLP(input_dim=600, n_classes=100)
+    elif model_name == "texasmlp":
+        if args.dataset == "texas100":
+            model = TexasMLP(input_dim=6169, n_classes=100)
+    elif model_name == 'lr' and args.dataset == "adult":
+        model = LogisticRegression(105, 2, flatten=False)
     elif model_name == "resnet18_gn" and args.dataset == "fed_cifar100":
         logging.info("ResNet18_GN + Federated_CIFAR100")
         model = resnet18()
@@ -262,6 +339,13 @@ def create_model(args, model_name, output_dim):
         model = RNN_StackOverFlow()
     elif model_name == "resnet56":
         model = resnet56(class_num=output_dim)
+    elif model_name == "vgg11":
+        model = VGG("VGG11")
+    elif model_name == "resnet20":
+        if args.dataset == "cifar10":
+            model = resnet20_cifar(num_classes=10)
+        elif args.dataset == "chmnist":
+            model = resnet20_cifar(num_classes=8)
     elif model_name == "mobilenet":
         model = mobilenet(class_num=output_dim)
     elif model_name == 'mobilenet_v3':
@@ -335,7 +419,7 @@ if __name__ == "__main__":
         wandb.init(
             # project="federated_nas",
             project="fedml",
-            name="Fedml (central)" + str(args.partition_method) + "r" + str(args.comm_round) + "-e" + str(
+            name="Fedml (central)" + f"[{args.run_tag}]" + "-" + args.dataset + "-" + args.model + "-" + str(args.partition_method) + "-r" + str(args.comm_round) + "-e" + str(
                 args.epochs) + "-lr" + str(
                 args.lr),
             config=args
@@ -364,6 +448,7 @@ if __name__ == "__main__":
     dataset = load_data(args, args.dataset)
     [train_data_num, test_data_num, train_data_global, test_data_global,
      train_data_local_num_dict, train_data_local_dict, test_data_local_dict, class_num] = dataset
+    # dataset = [6]*9
 
     # create model.
     # Note if the model is DNN (e.g., ResNet), the training will be very slow.
@@ -380,3 +465,54 @@ if __name__ == "__main__":
     # start "federated averaging (FedAvg)"
     single_trainer = CentralizedTrainer(dataset, model, device, args)
     single_trainer.train()
+
+
+
+
+    # model = model.cpu()
+    # model.eval()
+    
+    # from torch import optim
+    # from har_trainer import *
+    # from har_eval import *
+
+    # train_loader, test_loader = dataset[2], dataset[3]
+    # optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    # criterion = nn.CrossEntropyLoss()
+
+    # # # TRAINS
+    # # print('***************************************************')
+    # # print('*                 Training Model                  *')
+    # # print('***************************************************')
+    # # trainer = Trainer(model, optimizer, criterion)
+    # # trainer(train_loader, args.epochs)
+    
+    
+    # evaluate = Evaluator(model, 6, None)
+    # # print('***************************************************')
+    # # print('*            Evaluating Train Accuracy            *')
+    # # print('***************************************************')
+    # # train_accuracy, class_train_accuracy, confusion = evaluate(train_loader)
+    # # print('Train accuracy of the network on the %i train sequences: %.2f %%' %
+    # #         (len(train_loader.dataset), train_accuracy))
+    # # # for i in range(args.num_classes):
+    # # #     print('Accuracy of class %i: %5s : %.2f %%' % (i, class_labels[i], class_train_accuracy[i]))
+    # # print("\n")
+    # # print("Confusion matrix:")
+    # # print("--------------------------------")
+    # # print(confusion)
+    # # print("\n")
+    
+    
+    # print('***************************************************')
+    # print('*            Evaluating Test Accuracy             *')
+    # print('***************************************************')
+    # test_accuracy, class_test_accuracy, confusion = evaluate(test_loader)
+    # print('Test accuracy of the network on the %i test sequences: %.2f %%' %
+    #         (len(test_loader.dataset), test_accuracy))
+    # # for i in range(args.num_classes):
+    # #     print('Accuracy of class %i: %5s : %.2f %%' % (i, class_labels[i], class_test_accuracy[i]))
+    # print("\n")
+    # print("Confusion matrix:")
+    # print("--------------------------------")
+    # print(confusion)

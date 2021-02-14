@@ -5,6 +5,7 @@ import random
 import numpy as np
 import torch
 import wandb
+from pdb import set_trace as st
 
 from fedml_api.standalone.fedavg.client import Client
 
@@ -36,6 +37,7 @@ class FedAvgAPI(object):
                        train_data_local_num_dict[client_idx], self.args, self.device, model_trainer)
             self.client_list.append(c)
         logging.info("############setup_clients (END)#############")
+        
 
     def train(self):
         w_global = self.model_trainer.get_model_params()

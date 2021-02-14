@@ -1,10 +1,14 @@
 import logging
 from pdb import set_trace as st
+import os.path as osp
 import numpy as np
 import torch
+import pickle
 import torch.utils.data as data
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Dataset
+
+from sklearn.model_selection import train_test_split
 
 # from .datasets import CIFAR10_truncated
 
@@ -31,69 +35,67 @@ def record_net_data_stats(y_train, net_dataidx_map):
     logging.debug('Data statistics: %s' % str(net_cls_counts))
     return net_cls_counts
 
+def load_purchase(dataset, datadir):
+    dir = osp.join(datadir, "income_proc")
+    path = osp.join(dir, "train_val_feat.npy")
+    x_train = np.load(path)
+    path = osp.join(dir, "train_val_label.npy")
+    y_train = np.load(path)
+    path = osp.join(dir, "test_feat.npy")
+    x_test = np.load(path)
+    path = osp.join(dir, "test_label.npy")
+    y_test = np.load(path)
+    
+    
+    return x_train, y_train, x_test, y_test
+    
 
-class DatasetSplit(Dataset):
-    """An abstract Dataset class wrapped around Pytorch Dataset class.
-    """
 
-    def __init__(self, dataset, idxs):
-        self.dataset = dataset
-        self.idxs = [int(i) for i in idxs]
+class AdultSplit(data.Dataset):
 
+    def __init__(self, data, target, idxs=None, transform=None):
+
+        self.data, self.target = data, target
+        self.transform = transform
+        if idxs is not None:
+            self.idxs = idxs
+        else:
+            self.idxs = np.arange(len(data))
+        
     def __len__(self):
         return len(self.idxs)
 
-    def __getitem__(self, item):
-        image, label = self.dataset[self.idxs[item]]
+    def __getitem__(self, index):
+
+        img, target = self.data[self.idxs[index]], self.target[self.idxs[index]]
+
+        # img = torch.Tensor(img).unsqueeze(0)
+        # target = torch.Tensor(target).unsqueeze(0)
+        # print(img.shape)
+
         
-        # return torch.tensor(image), torch.tensor(label)
-        return image, label
+        return img.astype(np.float32), target.astype(np.int64)
 
-
-def load_mnist_dataset(dataset, data_dir):
-    
-    # data_dir = '../data/mnist/'
-    apply_transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,))])
-    
-    if dataset == "mnist":
-        train_dataset = datasets.MNIST(data_dir, train=True, download=True,
-                                    transform=apply_transform)
-
-        test_dataset = datasets.MNIST(data_dir, train=False, download=True,
-                                        transform=apply_transform)
-    elif dataset == "fmnist":
-        train_dataset = datasets.FashionMNIST(data_dir, train=True, download=True,
-                                    transform=apply_transform)
-
-        test_dataset = datasets.FashionMNIST(data_dir, train=False, download=True,
-                                        transform=apply_transform)
-    elif dataset == "emnist":
-        train_dataset = datasets.EMNIST(data_dir, train=True, download=True,
-                                    transform=apply_transform, split="balanced")
-
-        test_dataset = datasets.EMNIST(data_dir, train=False, download=True,
-                                        transform=apply_transform, split="balanced")
-    else:
-        raise NotImplementedError
-    return train_dataset, test_dataset
-    
-def load_mnist_data(dataset, data_dir):
-    train_dataset, test_dataset = load_mnist_dataset(dataset, data_dir)
-    
-    X_train, y_train = train_dataset.data, train_dataset.targets
-    X_test, y_test = test_dataset.data, test_dataset.targets
-
-    return (X_train, y_train, X_test, y_test)
 
 
 # for centralized training
-def get_dataloader(dataset, data_dir, train_bs, test_bs, dataidxs=None):
-    train_dataset, test_dataset = load_mnist_dataset(dataset, data_dir)
+def get_dataloader(x_train, y_train, x_test, y_test, train_bs, test_bs, dataidxs=None):
+    train_transform = transforms.Compose([
+
+        transforms.ToTensor(),
+        # transforms.Normalize(CIFAR_MEAN, CIFAR_STD),
+    ])
+
+    test_transform = transforms.Compose([
+        transforms.ToTensor(),
+    ])
     
-    if dataidxs is not None:
-        train_dataset = DatasetSplit(train_dataset, dataidxs)
+    # train_dataset, test_dataset = load_mnist_dataset(dataset, data_dir)
+    train_dataset = AdultSplit(x_train, y_train, idxs=dataidxs,)
+    test_dataset = AdultSplit(x_test, y_test,)
+    # train_dataset[0]
+    # print(len(train_dataset))
+    # st()
     train_dl = data.DataLoader(dataset=train_dataset, batch_size=train_bs, shuffle=True, drop_last=True)
     test_dl = data.DataLoader(dataset=test_dataset, batch_size=test_bs, shuffle=False, drop_last=True)
     return train_dl, test_dl
@@ -101,7 +103,7 @@ def get_dataloader(dataset, data_dir, train_bs, test_bs, dataidxs=None):
 
 def partition_data(dataset, datadir, partition, n_nets, alpha):
     logging.info("*********partition data***************")
-    X_train, y_train, X_test, y_test = load_mnist_data(dataset, datadir)
+    X_train, y_train, X_test, y_test = load_purchase(dataset, datadir)
     n_train = X_train.shape[0]
     # n_test = X_test.shape[0]
     
@@ -154,7 +156,7 @@ def partition_data(dataset, datadir, partition, n_nets, alpha):
         for j in range(n_nets):
             np.random.shuffle(idx_batch[j])
             net_dataidx_map[j] = idx_batch[j]
-
+    
     traindata_cls_counts = record_net_data_stats(y_train, net_dataidx_map)
     
     return X_train, y_train, X_test, y_test, net_dataidx_map, traindata_cls_counts
@@ -162,7 +164,7 @@ def partition_data(dataset, datadir, partition, n_nets, alpha):
 
 
 
-def load_partition_data_mnist(dataset, data_dir, partition_method, partition_alpha, client_number, batch_size):
+def load_partition_data_uciadult(dataset, data_dir, partition_method, partition_alpha, client_number, batch_size):
     X_train, y_train, X_test, y_test, net_dataidx_map, traindata_cls_counts = partition_data(dataset,
                                                                                              data_dir,
                                                                                              partition_method,
@@ -172,11 +174,15 @@ def load_partition_data_mnist(dataset, data_dir, partition_method, partition_alp
     logging.info("traindata_cls_counts = " + str(traindata_cls_counts))
     train_data_num = sum([len(net_dataidx_map[r]) for r in range(client_number)])
 
-    train_data_global, test_data_global = get_dataloader(dataset, data_dir, batch_size, batch_size)
+    train_data_global, test_data_global = get_dataloader(
+        X_train, y_train, X_test, y_test, 
+        batch_size, batch_size
+    )
     logging.info("train_dl_global number = " + str(len(train_data_global)))
     logging.info("test_dl_global number = " + str(len(test_data_global)))
     test_data_num = len(test_data_global)
-
+    
+    
     # get local dataset
     data_local_num_dict = dict()
     train_data_local_dict = dict()
@@ -189,11 +195,14 @@ def load_partition_data_mnist(dataset, data_dir, partition_method, partition_alp
         logging.info("client_idx = %d, local_sample_number = %d" % (client_idx, local_data_num))
 
         # training batch size = 64; algorithms batch size = 32
-        train_data_local, test_data_local = get_dataloader(dataset, data_dir, batch_size, batch_size,
-                                                 dataidxs)
+        train_data_local, test_data_local = get_dataloader(
+            X_train, y_train, X_test, y_test, 
+            batch_size, batch_size,
+            dataidxs)
         logging.info("client_idx = %d, batch_num_train_local = %d, batch_num_test_local = %d" % (
             client_idx, len(train_data_local), len(test_data_local)))
         train_data_local_dict[client_idx] = train_data_local
         test_data_local_dict[client_idx] = test_data_local
+    
     return client_number, train_data_num, test_data_num, train_data_global, test_data_global, \
            data_local_num_dict, train_data_local_dict, test_data_local_dict, class_num

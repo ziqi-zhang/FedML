@@ -1,5 +1,5 @@
 import logging
-
+from pdb import set_trace as st
 import numpy as np
 import torch
 import torch.utils.data as data
@@ -45,6 +45,14 @@ def read_net_dataidx_map(filename='./data_preprocessing/non-iid-distribution/CIF
 
 def record_net_data_stats(y_train, net_dataidx_map):
     net_cls_counts = {}
+    
+    # for net_i, dataidx_i in net_dataidx_map.items():
+    #     for net_j, dataidx_j in net_dataidx_map.items():
+    #         if net_i == net_j:
+    #             continue
+    #         inter = np.intersect1d(dataidx_i, dataidx_j)
+    #         print(net_i, net_j, len(inter))
+    # st()
 
     for net_i, dataidx in net_dataidx_map.items():
         unq, unq_cnt = np.unique(y_train[dataidx], return_counts=True)
@@ -115,7 +123,7 @@ def partition_data(dataset, datadir, partition, n_nets, alpha):
     X_train, y_train, X_test, y_test = load_cifar10_data(datadir)
     n_train = X_train.shape[0]
     # n_test = X_test.shape[0]
-
+    
     if partition == "homo":
         total_num = n_train
         idxs = np.random.permutation(total_num)
@@ -142,7 +150,46 @@ def partition_data(dataset, datadir, partition, n_nets, alpha):
                 proportions = (np.cumsum(proportions) * len(idx_k)).astype(int)[:-1]
                 idx_batch = [idx_j + idx.tolist() for idx_j, idx in zip(idx_batch, np.split(idx_k, proportions))]
                 min_size = min([len(idx_j) for idx_j in idx_batch])
-
+        
+        for j in range(n_nets):
+            np.random.shuffle(idx_batch[j])
+            net_dataidx_map[j] = idx_batch[j]
+    
+    elif partition == "p-hetero":
+        num_group = num_class = len(np.unique(y_train))
+        client_per_group = int(n_nets / num_group)
+        N = y_train.shape[0]
+        logging.info("N = " + str(N))
+        net_dataidx_map = {}
+        
+        idx_group = [[] for _ in range(num_group)]
+        for k in range(num_class):
+            idx_k = np.where(y_train == k)[0]
+            np.random.shuffle(idx_k)
+            
+            split_idx = int(alpha*len(idx_k))
+            dense_idxs = idx_k[:split_idx]
+            sparse_idxs = idx_k[split_idx:]
+            idx_group[k].append(dense_idxs)
+            
+            sparse_idxs = np.array_split(sparse_idxs, num_group-1)
+            
+            idx = 0
+            for sparse_k in range(num_class):
+                if k == sparse_k:
+                    continue
+                idx_group[sparse_k].append(sparse_idxs[idx])
+                idx += 1
+        for group in range(num_group):
+            idx_group[group] = np.concatenate(idx_group[group])
+            np.random.shuffle(idx_group[group])
+        
+        idx_batch = [[] for _ in range(n_nets)]
+        for group in range(num_group):
+            group_split = np.array_split(idx_group[group], client_per_group)
+            for batch in range(client_per_group):
+                idx_batch[group*client_per_group+batch] = group_split[batch]
+        
         for j in range(n_nets):
             np.random.shuffle(idx_batch[j])
             net_dataidx_map[j] = idx_batch[j]
@@ -156,7 +203,7 @@ def partition_data(dataset, datadir, partition, n_nets, alpha):
         traindata_cls_counts = read_data_distribution(distribution_file_path)
     else:
         traindata_cls_counts = record_net_data_stats(y_train, net_dataidx_map)
-
+    
     return X_train, y_train, X_test, y_test, net_dataidx_map, traindata_cls_counts
 
 

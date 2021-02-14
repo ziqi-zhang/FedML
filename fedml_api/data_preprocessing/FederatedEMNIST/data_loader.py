@@ -1,5 +1,6 @@
 import logging
 import os
+from pdb import set_trace as st
 
 import h5py
 import numpy as np
@@ -37,17 +38,25 @@ def get_dataloader(dataset, data_dir, train_bs, test_bs, client_idx=None):
         # get ids of all clients
         train_ids = client_ids_train
         test_ids = client_ids_test
-    else:
+    elif isinstance(client_idx, int):
         # get ids of single client
         train_ids = [client_ids_train[client_idx]]
         test_ids = [client_ids_test[client_idx]]
-
+    else:
+        train_ids = [client_ids_train[id] for id in client_idx]
+        test_ids = [client_ids_test[id] for id in client_idx]
+        
+    # for id in train_ids:
+    #     print(train_h5[_EXAMPLE][id][_IMGAE][()].shape)
+    
     # load data in numpy format from h5 file
-    train_x = np.vstack([train_h5[_EXAMPLE][client_id][_IMGAE][()] for client_id in train_ids])
-    train_y = np.vstack([train_h5[_EXAMPLE][client_id][_LABEL][()] for client_id in train_ids]).squeeze()
-    test_x = np.vstack([test_h5[_EXAMPLE][client_id][_IMGAE][()] for client_id in test_ids])
-    test_y = np.vstack([test_h5[_EXAMPLE][client_id][_LABEL][()] for client_id in test_ids]).squeeze()
-
+    # train_x = np.vstack([train_h5[_EXAMPLE][client_id][_IMGAE][()] for client_id in train_ids])
+    # np.concatenate([train_h5[_EXAMPLE]['f0518_02'][_IMGAE][()], train_h5[_EXAMPLE]['f0519_46'][_IMGAE][()]], axis=0)
+    train_x = np.concatenate([train_h5[_EXAMPLE][client_id][_IMGAE][()] for client_id in train_ids], axis=0)
+    train_y = np.concatenate([train_h5[_EXAMPLE][client_id][_LABEL][()] for client_id in train_ids], axis=0).squeeze()
+    test_x = np.concatenate([test_h5[_EXAMPLE][client_id][_IMGAE][()] for client_id in test_ids], axis=0)
+    test_y = np.concatenate([test_h5[_EXAMPLE][client_id][_LABEL][()] for client_id in test_ids], axis=0).squeeze()
+    
     # dataloader
     train_ds = data.TensorDataset(torch.tensor(train_x), torch.tensor(train_y, dtype=torch.long))
     train_dl = data.DataLoader(dataset=train_ds,
@@ -100,7 +109,7 @@ def load_partition_data_distributed_federated_emnist(process_id, dataset, data_d
     return DEFAULT_TRAIN_CLIENTS_NUM, train_data_num, train_data_global, test_data_global, local_data_num, train_data_local, test_data_local, class_num
 
 
-def load_partition_data_federated_emnist(dataset, data_dir, batch_size=DEFAULT_BATCH_SIZE):
+def load_partition_data_federated_emnist_fix3400(dataset, data_dir, batch_size=DEFAULT_BATCH_SIZE):
 
     # client ids
     train_file_path = os.path.join(data_dir, DEFAULT_TRAIN_FILE)
@@ -147,5 +156,63 @@ def load_partition_data_federated_emnist(dataset, data_dir, batch_size=DEFAULT_B
         logging.info("class_num = %d" % class_num)
 
     return DEFAULT_TRAIN_CLIENTS_NUM, train_data_num, test_data_num, train_data_global, test_data_global, \
+           data_local_num_dict, train_data_local_dict, test_data_local_dict, class_num
+
+def load_partition_data_federated_emnist(dataset, data_dir, 
+                                         batch_size=DEFAULT_BATCH_SIZE,
+                                         client_num_in_total=None):
+
+    # client ids
+    train_file_path = os.path.join(data_dir, DEFAULT_TRAIN_FILE)
+    test_file_path = os.path.join(data_dir, DEFAULT_TEST_FILE)
+    with h5py.File(train_file_path, 'r') as train_h5, h5py.File(test_file_path, 'r') as test_h5:
+        global client_ids_train, client_ids_test
+        client_ids_train = list(train_h5[_EXAMPLE].keys())
+        client_ids_test = list(test_h5[_EXAMPLE].keys())
+
+    # local dataset
+    data_local_num_dict = dict()
+    train_data_local_dict = dict()
+    test_data_local_dict = dict()
+    if client_num_in_total is None:
+        client_num_in_total = DEFAULT_TRAIN_CLIENTS_NUM
+    idxs_per_client = int(DEFAULT_TEST_CLIENTS_NUM / client_num_in_total)
+
+
+    for client_idx, client_init_idx in enumerate(range(0,DEFAULT_TEST_CLIENTS_NUM,idxs_per_client)):
+        client_idxs = list(range(client_init_idx, client_init_idx+idxs_per_client))
+
+        train_data_local, test_data_local = get_dataloader(dataset, data_dir, batch_size, batch_size, client_idxs)
+        
+        local_data_num = len(train_data_local) + len(test_data_local)
+        data_local_num_dict[client_idx] = local_data_num
+        # logging.info("client_idx = %d, local_sample_number = %d" % (client_idx, local_data_num))
+        # logging.info("client_idx = %d, batch_num_train_local = %d, batch_num_test_local = %d" % (
+        #     client_idx, len(train_data_local), len(test_data_local)))
+        train_data_local_dict[client_idx] = train_data_local
+        test_data_local_dict[client_idx] = test_data_local
+
+    # global dataset
+    train_data_global = data.DataLoader(
+                data.ConcatDataset(
+                    list(dl.dataset for dl in list(train_data_local_dict.values()))
+                ),
+                batch_size=batch_size, shuffle=True)
+    train_data_num = len(train_data_global.dataset)
+    
+    test_data_global = data.DataLoader(
+                data.ConcatDataset(
+                    list(dl.dataset for dl in list(test_data_local_dict.values()) if dl is not None)
+                ),
+                batch_size=batch_size, shuffle=True)
+    test_data_num = len(test_data_global.dataset)
+    
+    # class number
+    train_file_path = os.path.join(data_dir, DEFAULT_TRAIN_FILE)
+    with h5py.File(train_file_path, 'r') as train_h5:
+        class_num = len(np.unique([train_h5[_EXAMPLE][client_ids_train[idx]][_LABEL][0] for idx in range(DEFAULT_TRAIN_CLIENTS_NUM)]))
+        logging.info("class_num = %d" % class_num)
+
+    return client_num_in_total, train_data_num, test_data_num, train_data_global, test_data_global, \
            data_local_num_dict, train_data_local_dict, test_data_local_dict, class_num
 

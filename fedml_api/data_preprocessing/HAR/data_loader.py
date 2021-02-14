@@ -1,10 +1,14 @@
 import logging
 from pdb import set_trace as st
 import numpy as np
+import os
+import os.path as osp
 import torch
 import torch.utils.data as data
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Dataset
+import pandas as pd
+from sklearn.preprocessing import StandardScaler
 
 # from .datasets import CIFAR10_truncated
 
@@ -49,48 +53,170 @@ class DatasetSplit(Dataset):
         # return torch.tensor(image), torch.tensor(label)
         return image, label
 
+# load a list of files and return as a 3d numpy array
+def load_group(filenames, prefix=''):
+    loaded = list()
+    for name in filenames:
+        data = load_file(prefix + name)
+        loaded.append(data)
+    # stack group so that features are the 3rd dimension
+    loaded = np.dstack(loaded)
+    return loaded
 
-def load_mnist_dataset(dataset, data_dir):
-    
-    # data_dir = '../data/mnist/'
-    apply_transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,))])
-    
-    if dataset == "mnist":
-        train_dataset = datasets.MNIST(data_dir, train=True, download=True,
-                                    transform=apply_transform)
+# load a single file as a numpy array
+def load_file(filepath):
+    dataframe = pd.read_csv(filepath, header=None, delim_whitespace=True)
+    return dataframe.values
 
-        test_dataset = datasets.MNIST(data_dir, train=False, download=True,
-                                        transform=apply_transform)
-    elif dataset == "fmnist":
-        train_dataset = datasets.FashionMNIST(data_dir, train=True, download=True,
-                                    transform=apply_transform)
 
-        test_dataset = datasets.FashionMNIST(data_dir, train=False, download=True,
-                                        transform=apply_transform)
-    elif dataset == "emnist":
-        train_dataset = datasets.EMNIST(data_dir, train=True, download=True,
-                                    transform=apply_transform, split="balanced")
+class HumanActivityRecognition(Dataset):
+    """Human activity recognition dataset"""
+    data_size = (9, 128)
+    n_classes = 6
+    classes = ['walking',
+               'walking upstairs',
+               'walking downstairs',
+               'sitting',
+               'standing',
+               'laying']
 
-        test_dataset = datasets.EMNIST(data_dir, train=False, download=True,
-                                        transform=apply_transform, split="balanced")
-    else:
-        raise NotImplementedError
+    def __init__(self, root,
+                 is_train=True,
+                 is_standardized=False):
+        """
+        Parameters
+        ----------
+
+        root : string
+            Path to the csv file with annotations.
+        is_train : bool
+            Chooses train or test set
+        is_standardized : bool
+            Chooses whether data is standardized
+        """
+        if is_train:
+            image_set = 'train'
+        else:
+            image_set = 'test'
+        
+        data_train = self.load_dataset(root, 'train')
+        if is_standardized and image_set == 'train':
+            print("Loading Human Activity Recognition train dataset ...")
+            X = self.standardize_data(data_train[0])
+            self.X = torch.from_numpy(X).permute(0,2,1).float()
+            self.Y = torch.from_numpy(data_train[1]).flatten().long()
+        elif is_standardized and image_set == 'test':
+            print("Loading Human Activity Recognition test dataset ...")
+            data_test = self.load_dataset(root, 'test')
+            X =  self.standardize_data(data_train[0], data_test[0])
+            self.X = torch.from_numpy(X).permute(0, 2, 1).float()
+            self.Y = torch.from_numpy(data_test[1]).flatten().long()
+        else:
+            print("Loading Human Activity Recognition %s dataset ..." % image_set)
+            data = self.load_dataset(root, image_set)
+            self.X = torch.from_numpy(data[0]).permute(0, 2, 1).float()
+            self.Y = torch.from_numpy(data[1]).flatten().long()
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        input = self.X[idx,:,:]
+        target = self.Y[idx]
+
+        return input, target
+
+    # load a dataset group, such as train or test
+    # borrowed methods from the tutorial
+    def load_dataset_group(self, group, prefix=''):
+        # filepath = prefix + group + '/Inertial Signals/'
+        filepath = os.path.join(prefix, group, 'Inertial Signals/')
+        
+        # load all 9 files as a single array
+        filenames = list()
+        # total acceleration
+        filenames += ['total_acc_x_' + group + '.txt', 'total_acc_y_' + group + '.txt', 'total_acc_z_' + group + '.txt']
+        # body acceleration
+        filenames += ['body_acc_x_' + group + '.txt', 'body_acc_y_' + group + '.txt', 'body_acc_z_' + group + '.txt']
+        # body gyroscope
+        filenames += ['body_gyro_x_' + group + '.txt', 'body_gyro_y_' + group + '.txt', 'body_gyro_z_' + group + '.txt']
+        # load input data
+        X = load_group(filenames, filepath)
+        
+        # load class output
+        path = osp.join(prefix, group, 'y_' + group + '.txt')
+        Y = load_file(path)
+        return X, Y
+
+    # load the dataset, returns train and test X and y elements
+    def load_dataset(self, root='', image_set='train'):
+        # load all train
+        X, Y = self.load_dataset_group(image_set, root)
+        # zero-offset class values
+        Y = Y - 1
+        return X, Y
+
+    # standardize data
+    def standardize_data(self, X_train, X_test=None):
+        """
+        Standardizes the dataset
+
+        If X_train is only passed, returns standardized X_train
+
+        If X_train and X_test are passed, returns standardized X_test
+        -------
+        """
+        # raise Exception("need to standardize the test set with the mean and stddev of the train set!!!!!!!")
+        # remove overlap
+        cut = int(X_train.shape[1] / 2)
+        longX_train = X_train[:, -cut:, :]
+        # flatten windows
+        longX_train = longX_train.reshape((longX_train.shape[0] * longX_train.shape[1], longX_train.shape[2]))
+        # flatten train and test
+        flatX_train = X_train.reshape((X_train.shape[0] * X_train.shape[1], X_train.shape[2]))
+
+        # standardize
+        s = StandardScaler()
+        # fit on training data
+        s.fit(longX_train)
+        # apply to training and test data
+        if X_test is not None:
+            print("Standardizing test set")
+            flatX_test = X_test.reshape((X_test.shape[0] * X_test.shape[1], X_test.shape[2]))
+            flatX_test = s.transform(flatX_test)
+            flatX_test = flatX_test.reshape((X_test.shape))
+            return flatX_test
+        else:
+            print("Standardizing train set")
+            # reshape
+            flatX_train = s.transform(flatX_train)
+            flatX_train = flatX_train.reshape((X_train.shape))
+            return flatX_train
+        
+
+def load_har_dataset(dataset, data_dir):
+
+    train_dataset = HumanActivityRecognition(root=data_dir, is_train=True)
+
+    test_dataset = HumanActivityRecognition(root=data_dir, is_train=False)
+
     return train_dataset, test_dataset
     
-def load_mnist_data(dataset, data_dir):
-    train_dataset, test_dataset = load_mnist_dataset(dataset, data_dir)
+def load_har_data(dataset, data_dir):
+    train_dataset, test_dataset = load_har_dataset(dataset, data_dir)
     
-    X_train, y_train = train_dataset.data, train_dataset.targets
-    X_test, y_test = test_dataset.data, test_dataset.targets
+    X_train, y_train = train_dataset.X, train_dataset.Y
+    X_test, y_test = test_dataset.X, test_dataset.Y
 
     return (X_train, y_train, X_test, y_test)
 
 
 # for centralized training
 def get_dataloader(dataset, data_dir, train_bs, test_bs, dataidxs=None):
-    train_dataset, test_dataset = load_mnist_dataset(dataset, data_dir)
+    train_dataset, test_dataset = load_har_dataset(dataset, data_dir)
     
     if dataidxs is not None:
         train_dataset = DatasetSplit(train_dataset, dataidxs)
@@ -101,7 +227,7 @@ def get_dataloader(dataset, data_dir, train_bs, test_bs, dataidxs=None):
 
 def partition_data(dataset, datadir, partition, n_nets, alpha):
     logging.info("*********partition data***************")
-    X_train, y_train, X_test, y_test = load_mnist_data(dataset, datadir)
+    X_train, y_train, X_test, y_test = load_har_data(dataset, datadir)
     n_train = X_train.shape[0]
     # n_test = X_test.shape[0]
     
@@ -162,7 +288,7 @@ def partition_data(dataset, datadir, partition, n_nets, alpha):
 
 
 
-def load_partition_data_mnist(dataset, data_dir, partition_method, partition_alpha, client_number, batch_size):
+def load_partition_data_ucihar(dataset, data_dir, partition_method, partition_alpha, client_number, batch_size):
     X_train, y_train, X_test, y_test, net_dataidx_map, traindata_cls_counts = partition_data(dataset,
                                                                                              data_dir,
                                                                                              partition_method,
@@ -195,5 +321,6 @@ def load_partition_data_mnist(dataset, data_dir, partition_method, partition_alp
             client_idx, len(train_data_local), len(test_data_local)))
         train_data_local_dict[client_idx] = train_data_local
         test_data_local_dict[client_idx] = test_data_local
+    
     return client_number, train_data_num, test_data_num, train_data_global, test_data_global, \
            data_local_num_dict, train_data_local_dict, test_data_local_dict, class_num

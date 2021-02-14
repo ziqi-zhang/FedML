@@ -1,5 +1,6 @@
 import copy
 import logging
+from pdb import set_trace as st
 
 import torch
 import wandb
@@ -56,15 +57,16 @@ class CentralizedTrainer(object):
 
     def eval_impl(self, epoch_idx):
         # train
-        if epoch_idx % self.args.frequency_of_train_acc_report == 0:
+        if (epoch_idx+1) % self.args.frequency_of_train_acc_report == 0:
             self.test_on_all_clients(b_is_train=True, epoch_idx=epoch_idx)
 
         # test
-        if epoch_idx % self.args.frequency_of_train_acc_report == 0:
+        if (epoch_idx+1) % self.args.frequency_of_test_acc_report == 0:
             self.test_on_all_clients(b_is_train=False, epoch_idx=epoch_idx)
 
     def test_on_all_clients(self, b_is_train, epoch_idx):
         self.model.eval()
+        # self.model.cpu()
         metrics = {
             'test_correct': 0,
             'test_loss': 0,
@@ -76,6 +78,7 @@ class CentralizedTrainer(object):
             test_data = self.train_global
         else:
             test_data = self.test_global
+        
         with torch.no_grad():
             for batch_idx, (x, target) in enumerate(test_data):
                 x = x.to(self.device)
@@ -94,12 +97,13 @@ class CentralizedTrainer(object):
                 else:
                     _, predicted = torch.max(pred, -1)
                     correct = predicted.eq(target).sum()
-
+                
                 metrics['test_correct'] += correct.item()
                 metrics['test_loss'] += loss.item() * target.size(0)
                 metrics['test_total'] += target.size(0)
         if self.args.rank == 0:
             self.save_log(b_is_train=b_is_train, metrics=metrics, epoch_idx=epoch_idx)
+        # self.model.cuda()
 
     def save_log(self, b_is_train, metrics, epoch_idx):
         prefix = 'Train' if b_is_train else 'Test'

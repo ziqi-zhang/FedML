@@ -1,12 +1,14 @@
 import argparse
 import logging
 import os
+import os.path as osp
 import random
 import sys
 
 import numpy as np
 import torch
 import wandb
+from pdb import set_trace as st
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.getcwd(), "../../../")))
 
@@ -22,13 +24,22 @@ from fedml_api.data_preprocessing.ImageNet.data_loader import load_partition_dat
 from fedml_api.data_preprocessing.Landmarks.data_loader import load_partition_data_landmarks
 from fedml_api.model.cv.mobilenet import mobilenet
 from fedml_api.model.cv.resnet import resnet56
-from fedml_api.model.cv.cnn import CNN_DropOut
+from fedml_api.model.cv.vgg import VGG
+from fedml_api.model.cv.cnn import CNN_DropOut, CNNCifar
 from fedml_api.data_preprocessing.FederatedEMNIST.data_loader import load_partition_data_federated_emnist
 from fedml_api.model.nlp.rnn import RNN_OriginalFedAvg, RNN_StackOverFlow
+from fedml_api.model.linear.dense_mlp import *
 
+from fedml_api.data_preprocessing.UCIAdult.dataloader import load_partition_data_uciadult
+from fedml_api.data_preprocessing.purchase.dataloader import load_partition_data_purchase
+from fedml_api.data_preprocessing.chmnist.data_loader import load_partition_data_chmnist
 from fedml_api.data_preprocessing.MNIST.data_loader import load_partition_data_mnist
+from fedml_api.data_preprocessing.HAR.data_loader import load_partition_data_ucihar
+from fedml_api.data_preprocessing.HAR.subject_dataloader import load_partition_data_ucihar_subject
 from fedml_api.model.linear.lr import LogisticRegression
+from fedml_api.model.linear.har_cnn import HAR_CNN
 from fedml_api.model.cv.resnet_gn import resnet18
+from fedml_api.model.cv.resnet_cifar import *
 
 from fedml_api.standalone.fedavg.fedavg_api import FedAvgAPI
 from fedml_api.standalone.fedavg.my_model_trainer_classification import MyModelTrainer as MyModelTrainerCLS
@@ -88,6 +99,7 @@ def add_args(parser):
 
     parser.add_argument('--ci', type=int, default=0,
                         help='CI')
+    parser.add_argument('--run_tag', type=str, default=None)
     return parser
 
 
@@ -103,22 +115,87 @@ def load_data(args, dataset_name):
     else:
         full_batch = False
 
-    if dataset_name == "mnist":
+    if dataset_name in ["mnist", "fmnist", "emnist"]:
         logging.info("load_data. dataset_name = %s" % dataset_name)
         client_num, train_data_num, test_data_num, train_data_global, test_data_global, \
         train_data_local_num_dict, train_data_local_dict, test_data_local_dict, \
-        class_num = load_partition_data_mnist(args.batch_size)
+        class_num = load_partition_data_mnist(
+            args.dataset, args.data_dir, args.partition_method,
+            args.partition_alpha, args.client_num_in_total, args.batch_size
+        )
+        
         """
         For shallow NN or linear models, 
         we uniformly sample a fraction of clients each round (as the original FedAvg paper)
         """
         args.client_num_in_total = client_num
-
-    elif dataset_name == "femnist":
+    elif dataset_name == "har":
         logging.info("load_data. dataset_name = %s" % dataset_name)
         client_num, train_data_num, test_data_num, train_data_global, test_data_global, \
         train_data_local_num_dict, train_data_local_dict, test_data_local_dict, \
-        class_num = load_partition_data_federated_emnist(args.dataset, args.data_dir)
+        class_num = load_partition_data_ucihar(
+            args.dataset, args.data_dir, args.partition_method,
+            args.partition_alpha, args.client_num_in_total, args.batch_size
+        )
+        
+        """
+        For shallow NN or linear models, 
+        we uniformly sample a fraction of clients each round (as the original FedAvg paper)
+        """
+        args.client_num_in_total = client_num
+    
+    elif dataset_name == "har_subject":
+        logging.info("load_data. dataset_name = %s" % dataset_name)
+        client_num, train_data_num, test_data_num, train_data_global, test_data_global, \
+        train_data_local_num_dict, train_data_local_dict, test_data_local_dict, \
+        class_num = load_partition_data_ucihar_subject(
+            args.dataset, args.data_dir, args.partition_method,
+            args.partition_alpha, args.client_num_in_total, args.batch_size
+        )
+        
+        """
+        For shallow NN or linear models, 
+        we uniformly sample a fraction of clients each round (as the original FedAvg paper)
+        """
+        args.client_num_in_total = client_num
+    elif dataset_name == "chmnist":
+        logging.info("load_data. dataset_name = %s" % dataset_name)
+        client_num, train_data_num, test_data_num, train_data_global, test_data_global, \
+        train_data_local_num_dict, train_data_local_dict, test_data_local_dict, \
+        class_num = load_partition_data_chmnist(
+            args.dataset, args.data_dir, args.partition_method,
+            args.partition_alpha, args.client_num_in_total, args.batch_size
+        )
+        
+        args.client_num_in_total = client_num
+    elif dataset_name == "adult":
+        logging.info("load_data. dataset_name = %s" % dataset_name)
+        client_num, train_data_num, test_data_num, train_data_global, test_data_global, \
+        train_data_local_num_dict, train_data_local_dict, test_data_local_dict, \
+        class_num = load_partition_data_uciadult(
+            args.dataset, args.data_dir, args.partition_method,
+            args.partition_alpha, args.client_num_in_total, args.batch_size
+        )
+        
+        args.client_num_in_total = client_num
+    elif dataset_name in ["purchase100", "texas100"]:
+        logging.info("load_data. dataset_name = %s" % dataset_name)
+        client_num, train_data_num, test_data_num, train_data_global, test_data_global, \
+        train_data_local_num_dict, train_data_local_dict, test_data_local_dict, \
+        class_num = load_partition_data_purchase(
+            args.dataset, args.data_dir, args.partition_method,
+            args.partition_alpha, args.client_num_in_total, args.batch_size
+        )
+        args.client_num_in_total = client_num
+    elif dataset_name == "femnist":
+        
+        logging.info("load_data. dataset_name = %s" % dataset_name)
+        client_num, train_data_num, test_data_num, train_data_global, test_data_global, \
+        train_data_local_num_dict, train_data_local_dict, test_data_local_dict, \
+        class_num = load_partition_data_federated_emnist(
+            args.dataset, args.data_dir, 
+            client_num_in_total = args.client_num_in_total,
+        )
         args.client_num_in_total = client_num
 
     elif dataset_name == "shakespeare":
@@ -238,12 +315,33 @@ def combine_batches(batches):
 def create_model(args, model_name, output_dim):
     logging.info("create_model. model_name = %s, output_dim = %s" % (model_name, output_dim))
     model = None
-    if model_name == "lr" and args.dataset == "mnist":
+    if model_name == "lr" and args.dataset in ["mnist", "fmnist", "emnist"]:
         logging.info("LogisticRegression + MNIST")
-        model = LogisticRegression(28 * 28, output_dim)
+        model = LogisticRegression(28 * 28, output_dim, flatten=True)
+    elif model_name == "cnn" and args.dataset in ["mnist", "fmnist", "emnist"]:
+        if args.dataset in ["mnist", "fmnist"]:
+            logging.info("CNN + MNIST")
+            model = CNN_DropOut(True)
+        elif args.dataset == "emnist":
+            logging.info("CNN + MNIST")
+            model = CNN_DropOut(only_digits=47)
+    elif model_name == "cnn" and args.dataset in ["har", "har_subject"]:
+        logging.info("CNN + HAR")
+        model = HAR_CNN(data_size=(9, 128), n_classes=6)
     elif model_name == "cnn" and args.dataset == "femnist":
         logging.info("CNN + FederatedEMNIST")
         model = CNN_DropOut(False)
+    elif model_name == "cnn" and args.dataset == "cifar10":
+        logging.info("CNN + CIFAR10")
+        model = CNNCifar()
+    elif model_name == "purchasemlp":
+        if args.dataset == "purchase100":
+            model = PurchaseMLP(input_dim=600, n_classes=100)
+    elif model_name == "texasmlp":
+        if args.dataset == "texas100":
+            model = TexasMLP(input_dim=6169, n_classes=100)
+    elif model_name == 'lr' and args.dataset == "adult":
+        model = LogisticRegression(105, 2, flatten=False)
     elif model_name == "resnet18_gn" and args.dataset == "fed_cifar100":
         logging.info("ResNet18_GN + Federated_CIFAR100")
         model = resnet18()
@@ -261,6 +359,13 @@ def create_model(args, model_name, output_dim):
         model = RNN_StackOverFlow()
     elif model_name == "resnet56":
         model = resnet56(class_num=output_dim)
+    elif model_name == "vgg11":
+        model = VGG("VGG11")
+    elif model_name == "resnet20":
+        if args.dataset == "cifar10":
+            model = resnet20_cifar(num_classes=10)
+        elif args.dataset == "chmnist":
+            model = resnet20_cifar(num_classes=8)
     elif model_name == "mobilenet":
         model = mobilenet(class_num=output_dim)
     return model
@@ -276,6 +381,7 @@ def custom_model_trainer(args, model):
 
 
 if __name__ == "__main__":
+    
     logging.basicConfig()
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
@@ -288,10 +394,13 @@ if __name__ == "__main__":
 
     wandb.init(
         project="fedml",
-        name="FedAVG-r" + str(args.comm_round) + "-e" + str(args.epochs) + "-lr" + str(args.lr),
+        name=("FedAVG " + f"[{args.run_tag}]" +args.dataset+"-"+args.model+"-"+args.partition_method+str(args.partition_alpha)+
+            "-r" + str(args.comm_round) + 
+            "-e" + str(args.epochs) + "-lr" + str(args.lr) + "-bs" +str(args.batch_size)
+        ),
         config=args
     )
-
+    
     # Set the random seed. The np.random seed determines the dataset partition.
     # The torch_manual_seed determines the initial weight.
     # We fix these two, so that we can reproduce the result.
@@ -299,9 +408,10 @@ if __name__ == "__main__":
     np.random.seed(0)
     torch.manual_seed(0)
     torch.cuda.manual_seed_all(0)
-
+    
     # load data
     dataset = load_data(args, args.dataset)
+    # dataset = [6]*8
 
     # create model.
     # Note if the model is DNN (e.g., ResNet), the training will be very slow.
