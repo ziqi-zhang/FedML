@@ -35,7 +35,7 @@ python ./main.py \
   --ci $CI \
   --gpu $GPU \
   --frequency_of_test_acc_report 1 \
-  --run_tag baseline \
+  --run_tag data_ratio_baseline \
 
 
 

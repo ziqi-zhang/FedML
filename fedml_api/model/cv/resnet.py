@@ -12,6 +12,7 @@ import logging
 
 import torch
 import torch.nn as nn
+from pdb import set_trace as st
 
 __all__ = ['ResNet', 'resnet110']
 
@@ -157,6 +158,17 @@ class ResNet(nn.Module):
                     nn.init.constant_(m.bn3.weight, 0)
                 elif isinstance(m, BasicBlock):
                     nn.init.constant_(m.bn2.weight, 0)
+                    
+        self.log_penultimate_grad = False
+        self.penultimate_dim = 512
+        
+    def open_penultimate_log(self):
+        self.log_penultimate_grad = True
+        
+    def close_penultimate_log(self):
+        self.log_penultimate_grad = False
+        self.penultimate = None
+
 
     def _make_layer(self, block, planes, blocks, stride=1, dilate=False):
         norm_layer = self._norm_layer
@@ -192,7 +204,11 @@ class ResNet(nn.Module):
 
         x = self.avgpool(x)  # B x 64 x 1 x 1
         x_f = x.view(x.size(0), -1)  # B x 64
+        if self.log_penultimate_grad:
+            self.penultimate = x_f
+            self.penultimate.retain_grad()
         x = self.fc(x_f)  # B x num_classes
+        
         if self.KD == True:
             return x_f, x
         else:

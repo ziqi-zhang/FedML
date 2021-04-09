@@ -1,8 +1,9 @@
 import math
+import logging
 
 import torch.nn as nn
 import torch.utils.model_zoo as model_zoo
-
+from pdb import set_trace as st
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152']
 
@@ -143,6 +144,21 @@ class ResNet(nn.Module):
                 m.bn3.weight.data.fill_(0)
             if isinstance(m, BasicBlock):
                 m.bn2.weight.data.fill_(0)
+                
+        self.log_penultimate_grad = False
+        self.penultimate_dim = 512 * block.expansion
+        
+        set_block_mode(self)
+        for key, params in self.avgmode_to_layers.items():
+            print(key, params)
+            
+        
+    def open_penultimate_log(self):
+        self.log_penultimate_grad = True
+        
+    def close_penultimate_log(self):
+        self.log_penultimate_grad = False
+        self.penultimate = None
 
     def _make_layer(self, block, planes, blocks, stride=1, group_norm=0):
         downsample = None
@@ -175,19 +191,123 @@ class ResNet(nn.Module):
 
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
+        if self.log_penultimate_grad:
+            self.penultimate = x
+            self.penultimate.retain_grad()
         x = self.fc(x)
 
         return x
+    
+    blocks = [["conv1", "bn1", "layer1"], "layer2", "layer3", "layer4", "fc"]
+    feature_layers = ["layer1", "layer2", "layer3", "layer4",]
+    
+    def feature_forward(self, x):        
+        features = []
+        x = self.conv1_forward(x)
+        x = self.bn1_forward(x)
+        x = self.layer1_forward(x)
+        if "layer1" in self.feature_layers:
+            features.append(x)
+        x = self.layer2_forward(x)
+        if "layer2" in self.feature_layers:
+            features.append(x)
+        x = self.layer3_forward(x)
+        if "layer3" in self.feature_layers:
+            features.append(x)
+        x = self.layer4_forward(x)
+        if "layer4" in self.feature_layers:
+            features.append(x)
+        
+        x = self.fc_forward(x)
+        return features, x
+        
+    def conv1_forward(self, x):
+        x = self.conv1(x)
+        return x
+    
+    def bn1_forward(self, x):
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+        return x
+    
+    def layer1_forward(self, x):
+        x = self.layer1(x)
+        return x
+    
+    def layer2_forward(self, x):
+        x = self.layer2(x)
+        return x
 
+    def layer3_forward(self, x):
+        x = self.layer3(x)
+        return x
+    
+    def layer4_forward(self, x):
+        x = self.layer4(x)
+        x = self.avgpool(x)
+        x = x.view(x.size(0), -1)
+        return x
+    
+    def fc_forward(self, x):
+        x = self.fc(x)
+        return x
+    
+    layer_to_forward_fn = {
+        "conv1": conv1_forward,
+        "bn1": bn1_forward,
+        "layer1": layer1_forward, 
+        "layer2": layer2_forward, 
+        "layer3": layer3_forward,
+        "layer4": layer4_forward,
+        "fc": fc_forward,
+    }
 
-def resnet18(pretrained=False, **kwargs):
+resnet_layer_modes = {
+        "none": [],
+        "all": ["conv1", "bn1", "layer1", "layer2", "layer3", "layer4", "fc"],
+        
+        "to_layer1": ["conv1", "bn1", "layer1"],
+        "to_layer2": ["conv1", "bn1", "layer1", "layer2"],
+        "to_layer3": ["conv1", "bn1", "layer1", "layer2", "layer3"],
+        "to_layer4": ["conv1", "bn1", "layer1", "layer2", "layer3", "layer4"],
+        "layer1": ["layer1"],
+        "layer2": ["layer2"],
+        "layer3": ["layer3"],
+        "layer4": ["layer4"],
+        
+
+        "top_fc": ["fc"],
+        "top_layer4": ["layer4", "fc"],
+        "top_layer3": ["layer3", "layer4", "fc"],
+    }
+
+def set_block_mode(model):
+    param_names = []
+    for name in model.cpu().state_dict().keys():
+        param_names.append(name)
+    model_layer_modes = {}
+    for mode_key in resnet_layer_modes.keys():
+        model_layer_modes[mode_key] = []
+        for mode_key_layer in resnet_layer_modes[mode_key]:
+            for name in param_names:
+                if mode_key_layer == name.split('.')[0]:
+                    assert name not in model_layer_modes[mode_key]
+                    model_layer_modes[mode_key].append(name)
+    model.avgmode_to_layers = model_layer_modes
+
+def resnet18(pretrained=True, **kwargs):
     """Constructs a ResNet-18 model.
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
     """
     model = ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
     if pretrained:
-        model.load_state_dict(model_zoo.load_url(model_urls['resnet18']))
+        weights = model_zoo.load_url(model_urls['resnet18'])
+        del weights['fc.weight']
+        del weights['fc.bias']
+        model.load_state_dict(weights, strict=False)
+        logging.info("************ Load pretrained resnet18 model")
     return model
 
 
@@ -202,14 +322,18 @@ def resnet34(pretrained=False, **kwargs):
     return model
 
 
-def resnet50(pretrained=False, **kwargs):
+def resnet50(pretrained=True, **kwargs):
     """Constructs a ResNet-50 model.
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
     """
     model = ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
     if pretrained:
-        model.load_state_dict(model_zoo.load_url(model_urls['resnet50']))
+        weights = model_zoo.load_url(model_urls['resnet50'])
+        del weights['fc.weight']
+        del weights['fc.bias']
+        model.load_state_dict(weights, strict=False)
+        logging.info("************ Load pretrained resnet50 model")
     return model
 
 

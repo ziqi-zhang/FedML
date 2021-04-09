@@ -6,7 +6,7 @@ class PredVoteEnsemble(torch.nn.Module):
         super(PredVoteEnsemble, self).__init__()
         self.models = [client.model_trainer.model for client in clients]
         
-    def update_clients(self, clients):
+    def update_clients(self, branches, clients):
         self.models = [client.model_trainer.model for client in clients]
 
     def forward(self, x):

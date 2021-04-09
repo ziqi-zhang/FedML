@@ -53,9 +53,6 @@ from privacy_fedml.predweight_api import PredWeightAPI
 from privacy_fedml.blockavg_api import BlockAvgAPI
 from privacy_fedml.blockensemble_api import BlockEnsembleAPI
 from privacy_fedml.two_model_trainer import TwoModelTrainer
-from privacy_fedml.one_model_trainer import OneModelTrainer
-from privacy_fedml.three_model_trainer import ThreeModelTrainer
-from privacy_fedml.heteroensemble_api import HeteroEnsembleAPI
 
 from privacy_fedml.MI_attack.NN_attack import NNAttack
 from privacy_fedml.MI_attack.Top3_attack import Top3Attack
@@ -65,7 +62,7 @@ from privacy_fedml.MI_attack.Gradient_attack import GradientAttack
 
 from privacy_fedml.adv_attack.adv_attack import AdvAttack
 
-from fedml_api.model.ensemble.cnn import AdaptiveCNN
+from fedml_api.model.ensemble.cnn import AdaptiveCNN, build_large_cnn
 
 def add_args(parser):
     """
@@ -122,6 +119,7 @@ def add_args(parser):
     parser.add_argument('--run_tag', type=str, default="test")
     parser.add_argument('--aggr', type=str, default='fedavg')
     parser.add_argument('--branch_num', type=int, default=10)
+    parser.add_argument('--client_per_branch', type=int, default=1)
     parser.add_argument('--ensemble_method', type=str, default="predavg")
     parser.add_argument('--server_data_ratio', type=float, default=0.1)
     parser.add_argument('--server_epoch', type=int, default=1)
@@ -131,7 +129,6 @@ def add_args(parser):
     parser.add_argument('--no_mi_attack', action='store_true')
     
     parser.add_argument('--feat_lmda', type=float, default=0)
-    parser.add_argument('--clients_per_branch', type=int, default=-1)
     return parser
 
 
@@ -357,17 +354,10 @@ def create_model(args, model_name, output_dim):
     elif model_name == "cnn" and args.dataset in ["mnist", "fmnist", "emnist"]:
         if args.dataset in ["mnist", "fmnist"]:
             logging.info("CNN + MNIST")
-            model = CNN_DropOut(True)
+            model = build_large_cnn(True)
         elif args.dataset == "emnist":
             logging.info("CNN + MNIST")
-            model = CNN_DropOut(only_digits=47)
-    elif model_name == "hetero_cnn" and args.dataset in ["mnist", "fmnist", "emnist"]:
-        if args.dataset in ["mnist", "fmnist"]:
-            logging.info("CNN + MNIST")
-            model = AdaptiveCNN(True)
-        elif args.dataset == "emnist":
-            logging.info("CNN + MNIST")
-            model = AdaptiveCNN(only_digits=47)
+            model = build_large_cnn(only_digits=47)
     elif model_name == "cnn" and args.dataset in ["har", "har_subject"]:
         logging.info("CNN + HAR")
         model = HAR_CNN(data_size=(9, 128), n_classes=6)
@@ -437,13 +427,9 @@ def custom_model_trainer(args, model):
         return MyModelTrainerTAG(model)
     elif args.dataset in ["fed_shakespeare", "stackoverflow_nwp"]:
         return MyModelTrainerNWP(model)
-    elif args.aggr in ["blockensemble", "heteroensemble"] :
+    elif args.aggr == "blockensemble":
         return TwoModelTrainer(model)
         # return MyModelTrainerCLS(model)
-    elif args.aggr == "heteroensemble_onetrainer":
-        return OneModelTrainer(model)
-    elif args.aggr == "heteroensemble_threetrainer":
-        return ThreeModelTrainer(model)
     else: # default model trainer is for classification problem
         return MyModelTrainerCLS(model)
 
@@ -458,8 +444,6 @@ def load_server(args, dataset ,device, model_trainer, output_dim):
         server = BlockAvgAPI(dataset, device, args, model_trainer, output_dim)
     elif args.aggr == "blockensemble":
         server = BlockEnsembleAPI(dataset, device, args, model_trainer, output_dim)
-    elif args.aggr in ["heteroensemble", "heteroensemble_onetrainer", "heteroensemble_threetrainer"]:
-        server = HeteroEnsembleAPI(dataset, device, args, model_trainer, output_dim)
     else:
         raise NotImplementedError
     return server
@@ -489,7 +473,7 @@ if __name__ == "__main__":
     args.exp_name = (
         f"FedAVG[{args.run_tag}]{args.dataset}-{args.training_data_ratio}-{args.model}-" + 
         f"{args.partition_method}{str(args.partition_alpha)}-" +
-        f"[client{args.client_num_in_total}-branch{args.branch_num}-per{args.clients_per_branch}]-" +
+        f"[client{args.client_num_in_total}-branch{args.branch_num}]-" +
         f"[{args.aggr}-{args.ensemble_method}-{args.avg_mode}]-" +
         f"feat{str(args.feat_lmda)}-"
         f"r{str(args.comm_round)}-e{str(args.epochs)}-lr{str(args.lr)}-bs{str(args.batch_size)}"
@@ -534,7 +518,6 @@ if __name__ == "__main__":
         server.save_branch_state()
     else:
         server.load_branch_state()
-        server.server_test_on_global_dataset(0)
     
     # if not args.no_mi_attack:
     #     nn_attack = NNAttack(server, device, args, 0, 0)

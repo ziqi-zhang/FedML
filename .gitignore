@@ -3,6 +3,8 @@
 .idea/*
 .vscode/*
 
+examples/
+
 *.pyc
 ./*/*.pyc
 ./*/*/*.pyc
@@ -42,6 +44,7 @@ data/MNIST/test
 data/shakespeare/train
 data/shakespeare/test
 data/stackoverflow/datasets
+data/*
 
 # android
 .gradle
@@ -58,3 +61,5 @@ data/fednlp/*
 *.npz
 
 *.jpg
+
+*/__pycache__

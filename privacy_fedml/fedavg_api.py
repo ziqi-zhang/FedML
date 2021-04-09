@@ -1,6 +1,8 @@
 import copy
 import logging
 import random
+import os
+import os.path as osp
 
 import numpy as np
 import torch
@@ -11,7 +13,7 @@ from privacy_fedml.client import Client
 
 
 class FedAvgAPI(object):
-    def __init__(self, dataset, device, args, model_trainer):
+    def __init__(self, dataset, device, args, model_trainer, output_dim=10):
         self.device = device
         self.args = args
         [train_data_num, test_data_num, train_data_global, test_data_global,
@@ -21,6 +23,7 @@ class FedAvgAPI(object):
         self.val_global = None
         self.train_data_num_in_total = train_data_num
         self.test_data_num_in_total = test_data_num
+        self.output_dim = output_dim
 
         self.client_list = []
         self.train_data_local_num_dict = train_data_local_num_dict
@@ -52,15 +55,30 @@ class FedAvgAPI(object):
                 self.branch_to_client[branch_idx].append(idx)
             self.client_to_branch[idx] = branch_idx
         
+    def reset_accumulate_weight(self):
+        self.accumulate_state_dict = {}
+        for key, tensor in self.model_trainer.get_model_params().items():
+            self.accumulate_state_dict[key] = copy.deepcopy(tensor)
+            self.accumulate_state_dict[key].zero_()
+        
+    def update_accumulate_weight(self, w_locals):
+        for key, tensor in w_locals.items():
+            self.accumulate_state_dict[key] += tensor
+            
+    def average_accumulate_weight(self):
+        for key, tensor in self.accumulate_state_dict.items():
+            self.accumulate_state_dict[key] = tensor / self.args.client_num_per_round
+        return self.accumulate_state_dict
 
     def train(self):
         # w_global = self.model_trainer.get_model_params()
         # self.branches = [w_global for _ in self.client_list]
         for round_idx in range(self.args.comm_round):
-
+            
             logging.info("################Communication round : {}".format(round_idx))
-
+            self._set_client_branch(round_idx)
             w_locals = []
+            self.reset_accumulate_weight()
 
             """
             for scalability: following the original FedAvg algorithm, we uniformly sample a fraction of clients in each round.
@@ -82,10 +100,13 @@ class FedAvgAPI(object):
                 w = client.train(branch_w)
                 # self.logger.info("local weights = " + str(w))
                 # w_locals.append((client.get_sample_number(), copy.deepcopy(w)))
-                self.branches[self.client_to_branch[idx]] = copy.deepcopy(w)
+                # self.branches[self.client_to_branch[idx]] = w_locals[-1][1]
+                self.update_accumulate_weight(w)
+                logging.info(f"Round {round_idx}, client {idx}")
 
             # update global weights
-            w_global = self._aggregate(w_locals)
+            # w_global = self._aggregate(w_locals)
+            w_global = self.average_accumulate_weight()
             self.model_trainer.set_model_params(w_global)
             self.branches = [w_global for _ in self.client_list]
 
@@ -94,7 +115,7 @@ class FedAvgAPI(object):
             if round_idx == self.args.comm_round - 1:
                 self._local_test_on_all_clients(round_idx)
             # per {frequency_of_the_test} round
-            elif round_idx % self.args.frequency_of_the_test == 0:
+            elif (round_idx+1) % self.args.frequency_of_the_test == 0:
                 if self.args.dataset.startswith("stackoverflow"):
                     self._local_test_on_validation_set(round_idx)
                 else:
@@ -124,6 +145,7 @@ class FedAvgAPI(object):
             training_num += sample_num
 
         (sample_num, averaged_params) = w_locals[0]
+        
         for k in averaged_params.keys():
             for i in range(0, len(w_locals)):
                 local_sample_number, local_model_params = w_locals[i]
@@ -132,6 +154,7 @@ class FedAvgAPI(object):
                     averaged_params[k] = local_model_params[k] * w
                 else:
                     averaged_params[k] += local_model_params[k] * w
+            
         return averaged_params
 
     def _local_test_on_all_clients(self, round_idx):
@@ -279,7 +302,7 @@ class FedAvgAPI(object):
 
         client = self.client_list[0]
         
-        for client_idx in range(OTHER_CLIENT_TEST_NUM):
+        for client_idx in range(min(OTHER_CLIENT_TEST_NUM, len(self.client_list))):
             """
             Note: for datasets like "fed_CIFAR100" and "fed_shakespheare",
             the training client number is larger than the testing client number
@@ -403,3 +426,34 @@ class FedAvgAPI(object):
 
         logging.info(stats)
         
+    def save_branch_state(self):
+        
+        path = osp.join(self.args.save_dir, "branches.pt")
+        logging.info(f"################Save branch states to {path}")
+        torch.save(self.branches, path)
+        path = osp.join(self.args.save_dir, "client_branch_map.pt")
+        data = (self.client_to_branch, self.branch_to_client)
+        torch.save(data, path)
+        
+        
+    def load_branch_state(self):
+        path = osp.join(self.args.save_dir, "branches.pt")
+        logging.info(f"################Load branch states from {path}")
+        self.branches = torch.load(path)
+        
+        self._set_client_branch(0)
+        
+    def set_client_dataset(self):
+        # Load the client dataset
+        
+        client_indexes = self._client_sampling(
+            0, self.args.client_num_in_total,
+            self.args.client_num_per_round
+        )
+        logging.info("client_indexes = " + str(client_indexes))
+        for idx, client in enumerate(self.client_list):
+            # update dataset
+            client_idx = client_indexes[idx]
+            client.update_local_dataset(client_idx, self.train_data_local_dict[client_idx],
+                                        self.test_data_local_dict[client_idx],
+                                        self.train_data_local_num_dict[client_idx])

@@ -9,7 +9,7 @@ Reference:
 import torch
 import torch.nn as nn
 import math
-
+from pdb import set_trace as st
 
 def conv3x3(in_planes, out_planes, stride=1):
     " 3x3 convolution with padding "
@@ -62,6 +62,7 @@ class Bottleneck(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample
         self.stride = stride
+        
 
     def forward(self, x):
         residual = x
@@ -179,6 +180,16 @@ class ResNet_Cifar(nn.Module):
             elif isinstance(m, nn.BatchNorm2d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
+                
+        self.log_penultimate_grad = False
+        self.penultimate_dim = 64
+        
+    def open_penultimate_log(self):
+        self.log_penultimate_grad = True
+        
+    def close_penultimate_log(self):
+        self.log_penultimate_grad = False
+        self.penultimate = None
 
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None
@@ -207,9 +218,78 @@ class ResNet_Cifar(nn.Module):
 
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
+        if self.log_penultimate_grad:
+            self.penultimate = x
+            self.penultimate.retain_grad()
         x = self.fc(x)
-
         return x
+    
+    blocks = [["conv1", "bn1", "layer1"], "layer2", "layer3", "fc"]
+    feature_layers = ["layer1", "layer2", "layer3", ]
+    # feature_layers = []
+    
+    def feature_forward(self, x):        
+        features = []
+        x = self.conv1_forward(x)
+        x = self.bn1_forward(x)
+        x = self.layer1_forward(x)
+        if "layer1" in self.feature_layers:
+            features.append(x)
+        x = self.layer2_forward(x)
+        if "layer2" in self.feature_layers:
+            features.append(x)
+        x = self.layer3_forward(x)
+        if "layer3" in self.feature_layers:
+            features.append(x)
+        x = self.fc_forward(x)
+        return features, x
+    
+    def conv1_forward(self, x):
+        x = self.conv1(x)
+        return x
+    
+    def bn1_forward(self, x):
+        x = self.bn1(x)
+        x = self.relu(x)
+        return x
+    
+    def layer1_forward(self, x):
+        x = self.layer1(x)
+        return x
+    
+    def layer2_forward(self, x):
+        x = self.layer2(x)
+        return x
+
+    def layer3_forward(self, x):
+        x = self.layer3(x)
+        x = self.avgpool(x)
+        x = x.view(x.size(0), -1)
+        return x
+
+    def fc_forward(self, x):
+        x = self.fc(x)
+        return x
+    
+    layer_to_forward_fn = {
+        "conv1": conv1_forward,
+        "bn1": bn1_forward,
+        "layer1": layer1_forward, 
+        "layer2": layer2_forward, 
+        "layer3": layer3_forward,
+        "fc": fc_forward,
+    }
+    
+    def weight_reinit(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                m.weight.data.normal_(0, math.sqrt(2. / n))
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
+            elif isinstance(m, nn.Linear):
+                m.reset_parameters()
 
 
 class PreAct_ResNet_Cifar(nn.Module):

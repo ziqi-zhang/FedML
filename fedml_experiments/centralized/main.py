@@ -123,6 +123,7 @@ def add_args(parser):
     parser.add_argument('--local_rank', type=int, default=0,
                         help='given by torch.distributed.launch')
     parser.add_argument('--run_tag', type=str, default=None)
+    parser.add_argument('--training_data_ratio', type=float, default=1)
 
 
     args = parser.parse_args()
@@ -136,7 +137,8 @@ def load_data(args, dataset_name):
         train_data_local_num_dict, train_data_local_dict, test_data_local_dict, \
         class_num = load_partition_data_mnist(
             args.dataset, args.data_dir, args.partition_method,
-            args.partition_alpha, args.client_num_in_total, args.batch_size
+            args.partition_alpha, args.client_num_in_total, args.batch_size,
+            training_data_ratio=args.training_data_ratio,
         )
         
         """

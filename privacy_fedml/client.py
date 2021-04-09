@@ -25,10 +25,22 @@ class Client:
         return self.local_sample_number
     
     def train(self, w_global):
+        # if isinstance(w_global, torch.nn.Module):
+        #     self.model_trainer.set_model_arch_weights(w_global)
+        # elif isinstance(w_global, dict):
+        #     self.model_trainer.set_model_params(w_global)
+        # else:
+        #     raise NotImplementedError
         self.model_trainer.set_model_params(w_global)
         self.model_trainer.train(self.local_training_data, self.device, self.args)
         weights = self.model_trainer.get_model_params()
         return weights
+    
+    def train_with_arch(self, archs):
+        self.model_trainer.set_model_arch_weights(archs)
+        self.model_trainer.train(self.local_training_data, self.device, self.args)
+        trained_archs = self.model_trainer.get_model_arch_weights()
+        return trained_archs
 
     def local_test(self, b_use_test_dataset):
         if b_use_test_dataset:

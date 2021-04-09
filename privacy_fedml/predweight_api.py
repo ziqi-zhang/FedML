@@ -12,30 +12,38 @@ from .fedavg_api import FedAvgAPI
 from .model.pred_avg import PredAvgEnsemble
 from .model.pred_vote import PredVoteEnsemble
 from .model.pred_weight import PredWeight
+from .model.pred_weight_class import PredWeightClass
 
-class PredAvgAPI(FedAvgAPI):
+from .server_data import load_server_data
+
+from .my_model_trainer_classification import MyModelTrainer
+
+
+class PredWeightAPI(FedAvgAPI):
     def __init__(self, dataset, device, args, model_trainer, output_dim=10):
-        super(PredAvgAPI, self).__init__(dataset, device, args, model_trainer, output_dim)
+        super(PredWeightAPI, self).__init__(dataset, device, args, model_trainer, output_dim)
         if args.ensemble_method == "predavg":
             self.server_model = PredAvgEnsemble(self.client_list)
         elif args.ensemble_method == "predvote":
             self.server_model = PredVoteEnsemble(self.client_list)
         elif args.ensemble_method == "predweight":
-            self.server_model = PredWeight(self.branches, self.client_list)
+            self.server_model = PredWeight(self.branches, self.client_list, args, output_dim)
+        elif args.ensemble_method == "predweightclass":
+            self.server_model = PredWeightClass(self.branches, self.client_list, args, output_dim)
         else:
             raise NotImplementedError
-        self.server_trainer = copy.deepcopy(model_trainer)
-        self.server_trainer.model = self.server_model
         
-        self.branch_to_client, self.client_to_branch = {}, {}
+        self.server_trainer = MyModelTrainer(model=self.server_model)
+        self.server_train_data, self.server_test_data = load_server_data(args)
+        
         # self.set_server_weight()
+        # self.train_server_weight(0)
         # self.server_test_on_global_dataset(0)
         # self._set_client_branch(0)
         
     def _set_client_branch(self, round_idx):
-        
-        # client_per_branch = self.args.client_per_branch
-        client_per_branch = 1
+        self.branch_to_client, self.client_to_branch = {}, {}
+        client_per_branch = self.args.client_per_branch
         for idx in range(self.args.client_num_per_round):
             branch_idx = (idx- (round_idx%client_per_branch) ) % self.branch_num
             # self.branch_to_client[branch_idx] = idx
@@ -71,7 +79,7 @@ class PredAvgAPI(FedAvgAPI):
                 client.update_local_dataset(client_idx, self.train_data_local_dict[client_idx],
                                             self.test_data_local_dict[client_idx],
                                             self.train_data_local_num_dict[client_idx])
-                
+
                 # train on new dataset
                 logging.info(f"Round {round_idx} client {idx} train branch {self.client_to_branch[idx]}")
                 branch_w = self.branches[self.client_to_branch[idx]]
@@ -87,6 +95,7 @@ class PredAvgAPI(FedAvgAPI):
             
             # test results
             # at last round
+            self.train_server_weight(round_idx)
             if round_idx == self.args.comm_round - 1:
                 self.server_test_on_global_dataset(round_idx)
                 self.local_test_on_global_dataset(round_idx)
@@ -103,11 +112,20 @@ class PredAvgAPI(FedAvgAPI):
                     self._local_test_on_all_clients(round_idx)
                     
 
+    def train_server_weight(self, round_idx):
+        logging.info("################Train server weight : {}".format(round_idx))
+        
+        self.server_model.update_clients(self.branches, self.client_list)
+        server_args = copy.deepcopy(self.args)
+        server_args.epochs = self.args.server_epoch
+        self.server_trainer.train(self.server_train_data, self.device, server_args)
+        logging.info(self.server_model.branch_weight)
+        # self.server_model.reset_module_grad()
+        
 
     def set_client_weight(self, client, branch_idx):
         w_client = self.branches[branch_idx]
         client.model_trainer.set_model_params(w_client)
-        
         
     def set_server_weight(self):
         self.server_trainer.model.update_clients(self.branches, self.client_list)

@@ -9,48 +9,52 @@ from pdb import set_trace as st
 
 from privacy_fedml.client import Client
 from .fedavg_api import FedAvgAPI
+from .predavg_api import PredAvgAPI
 from .model.pred_avg import PredAvgEnsemble
 from .model.pred_vote import PredVoteEnsemble
 from .model.pred_weight import PredWeight
+from .model.pred_weight_class import PredWeightClass
 
-class PredAvgAPI(FedAvgAPI):
+from .server_data import load_server_data
+
+from .my_model_trainer_classification import MyModelTrainer
+
+
+class BlockAvgAPI(PredAvgAPI):
     def __init__(self, dataset, device, args, model_trainer, output_dim=10):
-        super(PredAvgAPI, self).__init__(dataset, device, args, model_trainer, output_dim)
-        if args.ensemble_method == "predavg":
-            self.server_model = PredAvgEnsemble(self.client_list)
-        elif args.ensemble_method == "predvote":
-            self.server_model = PredVoteEnsemble(self.client_list)
-        elif args.ensemble_method == "predweight":
-            self.server_model = PredWeight(self.branches, self.client_list)
-        else:
-            raise NotImplementedError
-        self.server_trainer = copy.deepcopy(model_trainer)
-        self.server_trainer.model = self.server_model
+        super(BlockAvgAPI, self).__init__(dataset, device, args, model_trainer, output_dim)
+        self.server_model = PredAvgEnsemble(self.client_list)
+        self.branch_num_samples = [0 for branch in range(args.branch_num)]
         
-        self.branch_to_client, self.client_to_branch = {}, {}
+        # param_names = ""
+        # for name, _ in self.model_trainer.model.state_dict().keys():
+        #     param_names += f"\"{name}\", "
+        # print(param_names)
+        # st()
+        
+        
+        assert args.avg_mode in self.model_trainer.model.avgmode_to_layers.keys()
+        self.avg_param_names = self.model_trainer.model.avgmode_to_layers[args.avg_mode]
+        separate_param_names = []
+        for name in self.model_trainer.model.cpu().state_dict().keys():
+            if name not in self.avg_param_names:
+                separate_param_names.append(name)
+        logging.info(f"====== Block avg params: {self.avg_param_names}")
+        logging.info(f"====== Separate params: {separate_param_names}")
+        # print(len(self.avg_param_names))
+        
         # self.set_server_weight()
+        # self.train_server_weight(0)
         # self.server_test_on_global_dataset(0)
         # self._set_client_branch(0)
         
-    def _set_client_branch(self, round_idx):
-        
-        # client_per_branch = self.args.client_per_branch
-        client_per_branch = 1
-        for idx in range(self.args.client_num_per_round):
-            branch_idx = (idx- (round_idx%client_per_branch) ) % self.branch_num
-            # self.branch_to_client[branch_idx] = idx
-            if branch_idx not in self.branch_to_client:
-                self.branch_to_client[branch_idx] = [idx]
-            elif idx not in self.branch_to_client[branch_idx]:
-                self.branch_to_client[branch_idx].append(idx)
-            self.client_to_branch[idx] = branch_idx
-        logging.info(f"Client branch map: {self.client_to_branch}")
-        logging.info(f"Branch client map: {self.branch_to_client}")
 
 
     def train(self):
         # w_global = self.model_trainer.get_model_params()
         # self.branches = [copy.deepcopy(w_global) for _ in self.client_list]
+        
+        
         for round_idx in range(self.args.comm_round):
             self._set_client_branch(round_idx)
             logging.info("################Communication round : {}".format(round_idx))
@@ -71,7 +75,7 @@ class PredAvgAPI(FedAvgAPI):
                 client.update_local_dataset(client_idx, self.train_data_local_dict[client_idx],
                                             self.test_data_local_dict[client_idx],
                                             self.train_data_local_num_dict[client_idx])
-                
+
                 # train on new dataset
                 logging.info(f"Round {round_idx} client {idx} train branch {self.client_to_branch[idx]}")
                 branch_w = self.branches[self.client_to_branch[idx]]
@@ -79,9 +83,16 @@ class PredAvgAPI(FedAvgAPI):
                 # self.logger.info("local weights = " + str(w))
                 # w_locals.append((client.get_sample_number(), copy.deepcopy(w)))
                 self.branches[self.client_to_branch[idx]] = copy.deepcopy(w)
+                self.branch_num_samples[self.client_to_branch[idx]] = client.get_sample_number()
 
             # update global weights
-            # w_global = self._aggregate(w_locals)
+            # print("0:  ", self.branches[0]["conv2d_1.bias"])
+            # print("1:  ", self.branches[1]["conv2d_1.bias"])
+            # st()
+            w_global = self._aggregate()
+            # print("0:  ", self.branches[0]["conv2d_1.bias"])
+            # print("1:  ", self.branches[1]["conv2d_1.bias"])
+            # st()
             # self.model_trainer.set_model_params(w_global)
             # self.branches = [w[1] for w in w_locals]
             
@@ -103,36 +114,23 @@ class PredAvgAPI(FedAvgAPI):
                     self._local_test_on_all_clients(round_idx)
                     
 
-
-    def set_client_weight(self, client, branch_idx):
-        w_client = self.branches[branch_idx]
-        client.model_trainer.set_model_params(w_client)
+    def _aggregate(self):
+        training_num = 0
+        for sample_num in self.branch_num_samples:
+            training_num += sample_num
         
-        
-    def set_server_weight(self):
-        self.server_trainer.model.update_clients(self.branches, self.client_list)
-        
-    def server_test_on_global_dataset(self, round_idx):
-        logging.info("################SERVER_test_on_GLOBAL_DATASET : {}".format(round_idx))
+        for k in self.avg_param_names:
+            for i in range(0, self.branch_num):
+                local_sample_number = self.branch_num_samples[i]
+                branch_param = self.branches[i][k]
+                w = local_sample_number / training_num
+                if i == 0:
+                    averaged_param = branch_param * w
+                else:
+                    averaged_param += branch_param * w
+            for i in range(0, self.branch_num):
+                # self.branches[i][k] = copy.deepcopy(averaged_param)
+                self.branches[i][k] = averaged_param
+            logging.info(f"====== Average {k}")
 
-        test_metrics = {
-            'num_samples': [],
-            'num_correct': [],
-            'losses': []
-        }
 
-        self.set_server_weight()
-        
-        metrics = self.server_trainer.test(self.test_global, self.device, self.args)
-        # test_metrics['num_samples'].append(copy.deepcopy(metrics['test_total']))
-        # test_metrics['num_correct'].append(copy.deepcopy(metrics['test_correct']))
-        # test_metrics['losses'].append(copy.deepcopy(metrics['test_loss']))
-
-        # test on test dataset
-        # test_acc = sum(test_metrics['num_correct']) / sum(test_metrics['num_samples'])
-        # test_loss = sum(test_metrics['losses']) / sum(test_metrics['num_samples'])
-        test_acc = metrics['test_correct'] / metrics['test_total']
-
-        stats = {'test_acc': test_acc, }
-        wandb.log({"TestServerGlobalDataset/Acc": test_acc, "round": round_idx})
-        logging.info(stats)
